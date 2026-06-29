@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Graph"
+  short_description: "Map repos into reusable graph context"
+  default_prompt: "Use $project-graph to build or refresh a cached graph for this repository before answering architecture questions."
