@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -130,6 +131,56 @@ class BuildProjectGraphTests(unittest.TestCase):
             self.assertEqual(bundle_code, 0)
             self.assertIn("Export Bundle", bundle_output)
             self.assertTrue((bundle_dir / "prompt.md").exists())
+
+    def test_inventory_hash_detects_deleted_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            doomed = root / "doomed.py"
+            doomed.write_text("VALUE = 1\n", encoding="utf-8")
+
+            first_code, _ = self.run_cli(root, root / ".project-graph")
+            doomed.unlink()
+            second_code, _ = self.run_cli(root, root / ".project-graph")
+
+            self.assertEqual(first_code, 0)
+            self.assertEqual(second_code, 0)
+            nodes = json.loads((root / ".project-graph" / "nodes.json").read_text(encoding="utf-8"))
+            self.assertNotIn("doomed.py", {node["id"] for node in nodes})
+            manifest = json.loads((root / ".project-graph" / "manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("source_inventory_hash", manifest)
+
+    def test_risk_and_mermaid_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "main.py").write_text("import util\n", encoding="utf-8")
+            (root / "util.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+            risk_code, risk_output = self.run_cli(root, root / ".project-graph", "--risk", "util.py")
+            mermaid_code, mermaid_output = self.run_cli(root, root / ".project-graph", "--around", "main.py", "--format", "mermaid")
+
+            self.assertEqual(risk_code, 0)
+            self.assertIn("Change Risk For `util.py`", risk_output)
+            self.assertIn("risk (score", risk_output)
+            self.assertEqual(mermaid_code, 0)
+            self.assertIn("```mermaid", mermaid_output)
+            self.assertIn("-->|imports|", mermaid_output)
+
+    def test_changed_since_reports_git_diff_impact(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            subprocess.run(["git", "init"], cwd=root, check=True, capture_output=True)
+            (root / "main.py").write_text("import util\n", encoding="utf-8")
+            (root / "util.py").write_text("VALUE = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-m", "initial"], cwd=root, check=True, capture_output=True)
+            (root / "util.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+            code, output = self.run_cli(root, root / ".project-graph", "--changed-since", "HEAD", "--limit", "5")
+
+            self.assertEqual(code, 0)
+            self.assertIn("Changed Since `HEAD`", output)
+            self.assertIn("`util.py` changed", output)
+            self.assertIn("`main.py` imports changed `util.py`", output)
 
 
 if __name__ == "__main__":

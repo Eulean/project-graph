@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import zipfile
 from collections import Counter, defaultdict, deque
@@ -128,6 +130,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Rebuild even if graph looks fresh")
     parser.add_argument("--around", help="Print a compact local graph around this node id")
     parser.add_argument("--impacted", help="Print importers likely affected by changes to this node id")
+    parser.add_argument("--risk", help="Print a graph-based change risk estimate for this node id")
+    parser.add_argument("--changed-since", help="Print graph impact for files changed since this Git ref")
     parser.add_argument("--read-next", help="Print the next files Codex should read after this node id")
     parser.add_argument("--why", help="Explain why this node appears in local impact/navigation results")
     parser.add_argument("--docs-for", help="Print docs likely relevant to this node id")
@@ -139,6 +143,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--confidence", action="store_true", help="Print graph confidence signals")
     parser.add_argument("--export-bundle", help="Write a small handoff bundle directory or .zip file")
     parser.add_argument("--bundle-for", help="Optional node id to focus --export-bundle output")
+    parser.add_argument("--format", choices=("markdown", "mermaid"), default="markdown", help="Output format for supported query modes")
     parser.add_argument("--depth", type=int, default=2, help="Traversal depth for --around or --impacted")
     parser.add_argument("--limit", type=int, default=12, help="Maximum query rows to print")
     return parser.parse_args()
@@ -385,7 +390,42 @@ def latest_source_mtime(root: Path, config: Config) -> int:
     return latest
 
 
-def graph_is_fresh(output_dir: Path, latest_mtime: int) -> bool:
+def source_inventory(root: Path, config: Config) -> list[dict]:
+    inventory = []
+    for file_path in iter_files(root, config):
+        try:
+            stat = file_path.stat()
+        except OSError:
+            continue
+        inventory.append(
+            {
+                "path": relative_id(root, file_path),
+                "size": stat.st_size,
+                "mtime": int(stat.st_mtime),
+            }
+        )
+    config_path = root / ".project-graph" / "config.json"
+    if config_path.exists():
+        try:
+            stat = config_path.stat()
+            inventory.append(
+                {
+                    "path": ".project-graph/config.json",
+                    "size": stat.st_size,
+                    "mtime": int(stat.st_mtime),
+                }
+            )
+        except OSError:
+            pass
+    return sorted(inventory, key=lambda item: item["path"])
+
+
+def inventory_hash(inventory: list[dict]) -> str:
+    payload = json.dumps(inventory, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def graph_is_fresh(output_dir: Path, latest_mtime: int, current_inventory_hash: str) -> bool:
     manifest_path = output_dir / "manifest.json"
     if not manifest_path.exists():
         return False
@@ -394,6 +434,9 @@ def graph_is_fresh(output_dir: Path, latest_mtime: int) -> bool:
             manifest = json.load(handle)
     except (OSError, json.JSONDecodeError):
         return False
+    stored_hash = manifest.get("source_inventory_hash")
+    if stored_hash:
+        return stored_hash == current_inventory_hash
     return int(manifest.get("source_latest_mtime", 0)) >= latest_mtime
 
 
@@ -422,10 +465,11 @@ def write_graph(
     nodes: list[dict],
     edges: list[dict],
     latest_mtime: int,
+    current_inventory_hash: str,
 ) -> None:
     write_json(output_dir / "nodes.json", nodes)
     write_json(output_dir / "edges.json", edges)
-    write_json(output_dir / "manifest.json", build_manifest(root, output_dir, config, file_nodes, edges, latest_mtime))
+    write_json(output_dir / "manifest.json", build_manifest(root, output_dir, config, file_nodes, edges, latest_mtime, current_inventory_hash))
     (output_dir / "summary.md").write_text(compute_summary(root, nodes, edges), encoding="utf-8")
     (output_dir / "viewer.html").write_text(viewer_html(nodes, edges, f"{root.name} Graph"), encoding="utf-8")
 
@@ -610,6 +654,136 @@ def query_central(nodes: list[dict], edges: list[dict], limit: int) -> None:
         [f"`{node_id}` ({total} import edges, in {in_count}, out {out_count})" for total, in_count, out_count, node_id in rows[:limit]]
         or ["None detected"],
     )
+
+
+def risk_details(nodes: list[dict], edges: list[dict], target: str) -> tuple[int, list[str]]:
+    node_lookup = {node["id"]: node for node in nodes}
+    outgoing, incoming = import_neighbors(edges)
+    score = 0
+    reasons = []
+    inbound = len(incoming[target])
+    outbound = len(outgoing[target])
+    if inbound:
+        score += inbound * 3
+        reasons.append(f"{inbound} importer(s)")
+    if outbound:
+        score += outbound * 2
+        reasons.append(f"{outbound} imported dependency/dependencies")
+    node = node_lookup.get(target, {})
+    lines = int(node.get("lines", 0) or 0)
+    if lines >= 300:
+        score += 4
+        reasons.append(f"{lines} lines")
+    elif lines >= 100:
+        score += 2
+        reasons.append(f"{lines} lines")
+    if likely_entrypoint_score(target) > 0:
+        score += 4
+        reasons.append("likely entrypoint")
+    files = file_nodes(nodes)
+    test_ids = {item["id"] for item in files if is_test_node(item["id"])}
+    if node.get("type") == "file" and not is_test_node(target) and not likely_test_for(target, test_ids):
+        score += 2
+        reasons.append("no obvious matching test")
+    return score, reasons or ["isolated or low-signal node"]
+
+
+def risk_level(score: int) -> str:
+    if score >= 10:
+        return "high"
+    if score >= 5:
+        return "medium"
+    return "low"
+
+
+def query_risk(nodes: list[dict], edges: list[dict], target: str) -> int:
+    if not node_exists(nodes, target):
+        print(f"Node not found: {target}", file=sys.stderr)
+        return 1
+    score, reasons = risk_details(nodes, edges, target)
+    print_rows(f"Change Risk For `{target}`", [f"{risk_level(score)} risk (score {score})", *reasons])
+    return 0
+
+
+def git_changed_files(root: Path, base_ref: str) -> tuple[list[str], str | None]:
+    commands = [["git", "diff", "--name-only", f"{base_ref}...HEAD"], ["git", "diff", "--name-only", base_ref]]
+    empty_success = False
+    for command in commands:
+        result = subprocess.run(command, cwd=root, text=True, capture_output=True, check=False)
+        if result.returncode == 0:
+            paths = [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
+            if paths:
+                return paths, None
+            empty_success = True
+    if empty_success:
+        return [], None
+    return [], result.stderr.strip() or f"Could not diff against {base_ref}"
+
+
+def query_changed_since(root: Path, nodes: list[dict], edges: list[dict], base_ref: str, limit: int) -> int:
+    changed, error = git_changed_files(root, base_ref)
+    if error:
+        print(error, file=sys.stderr)
+        return 1
+    node_ids = {node["id"] for node in nodes}
+    scanned = [path for path in changed if path in node_ids]
+    rows = [f"`{path}` changed" for path in scanned[:limit]]
+    if not rows:
+        rows.append("No changed scanned files detected")
+    outgoing, incoming = import_neighbors(edges)
+    impacted = []
+    for path in scanned:
+        for importer in sorted(incoming[path]):
+            impacted.append(f"`{importer}` imports changed `{path}`")
+    rows.extend(impacted[: max(limit - len(rows), 0)])
+    for path in scanned[:limit]:
+        score, _ = risk_details(nodes, edges, path)
+        rows.append(f"`{path}` risk: {risk_level(score)} (score {score})")
+    print_rows(f"Changed Since `{base_ref}`", rows[:limit] or ["No changes detected"])
+    return 0
+
+
+def mermaid_local_graph(nodes: list[dict], edges: list[dict], start: str, depth: int, limit: int) -> int:
+    if not node_exists(nodes, start):
+        print(f"Node not found: {start}", file=sys.stderr)
+        return 1
+    neighbors: dict[str, set[str]] = defaultdict(set)
+    edge_lookup: dict[tuple[str, str], str] = {}
+    for edge in edges:
+        neighbors[edge["source"]].add(edge["target"])
+        neighbors[edge["target"]].add(edge["source"])
+        edge_lookup[(edge["source"], edge["target"])] = edge["type"]
+        edge_lookup[(edge["target"], edge["source"])] = edge["type"]
+
+    seen = {start}
+    queue = deque([(start, 0)])
+    selected_edges = []
+    while queue and len(selected_edges) < limit:
+        current, current_depth = queue.popleft()
+        if current_depth >= depth:
+            continue
+        for neighbor in sorted(neighbors[current]):
+            edge_type = edge_lookup[(current, neighbor)]
+            selected_edges.append((current, neighbor, edge_type))
+            if neighbor not in seen:
+                seen.add(neighbor)
+                queue.append((neighbor, current_depth + 1))
+            if len(selected_edges) >= limit:
+                break
+
+    print("```mermaid")
+    print("graph LR")
+    if not selected_edges:
+        print(f'  {mermaid_id(start)}["{start}"]')
+    for source, target, edge_type in selected_edges:
+        print(f'  {mermaid_id(source)}["{source}"] -->|{edge_type}| {mermaid_id(target)}["{target}"]')
+    print("```")
+    return 0
+
+
+def mermaid_id(value: str) -> str:
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:10]
+    return f"N{digest}"
 
 
 def query_entrypoints(nodes: list[dict], limit: int) -> None:
@@ -816,9 +990,15 @@ def query_impacted(nodes: list[dict], edges: list[dict], start: str, depth: int,
 
 def run_query(args: argparse.Namespace, root: Path, output_dir: Path, nodes: list[dict], edges: list[dict]) -> int:
     if args.around:
+        if args.format == "mermaid":
+            return mermaid_local_graph(nodes, edges, args.around, max(args.depth, 0), max(args.limit, 1))
         return query_around(nodes, edges, args.around, max(args.depth, 0), max(args.limit, 1))
     if args.impacted:
         return query_impacted(nodes, edges, args.impacted, max(args.depth, 0), max(args.limit, 1))
+    if args.risk:
+        return query_risk(nodes, edges, args.risk)
+    if args.changed_since:
+        return query_changed_since(root, nodes, edges, args.changed_since, max(args.limit, 1))
     if args.read_next:
         return query_read_next(nodes, edges, args.read_next, max(args.limit, 1))
     if args.why:
@@ -892,12 +1072,21 @@ def compute_summary(root: Path, nodes: list[dict], edges: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build_manifest(root: Path, output_dir: Path, config: Config, files: list[dict], edges: list[dict], latest_mtime: int) -> dict:
+def build_manifest(
+    root: Path,
+    output_dir: Path,
+    config: Config,
+    files: list[dict],
+    edges: list[dict],
+    latest_mtime: int,
+    current_inventory_hash: str,
+) -> dict:
     return {
         "root": str(root),
         "output": str(output_dir),
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_latest_mtime": latest_mtime,
+        "source_inventory_hash": current_inventory_hash,
         "file_count": len(files),
         "edge_count": len(edges),
         "include_extensions": sorted(config.include_extensions),
@@ -1207,13 +1396,15 @@ def main() -> int:
     config = load_config(root)
     go_module_name = load_go_module_name(root)
     latest_mtime = latest_source_mtime(root, config)
-    fresh = not args.force and graph_is_fresh(output_dir, latest_mtime)
+    inventory = source_inventory(root, config)
+    current_inventory_hash = inventory_hash(inventory)
+    fresh = not args.force and graph_is_fresh(output_dir, latest_mtime, current_inventory_hash)
     if fresh:
         nodes, edges = load_graph(output_dir)
         print(f"Graph is already fresh at {output_dir}")
     else:
         file_nodes, nodes, edges = build_graph(root, config, go_module_name)
-        write_graph(root, output_dir, config, file_nodes, nodes, edges, latest_mtime)
+        write_graph(root, output_dir, config, file_nodes, nodes, edges, latest_mtime, current_inventory_hash)
         print(f"Wrote graph artifacts to {output_dir}")
 
     return run_query(args, root, output_dir, nodes, edges)

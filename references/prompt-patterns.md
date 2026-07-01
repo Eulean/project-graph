@@ -41,6 +41,32 @@ Only open raw files named by the query output.
 Return the result in 3-7 lines.
 ```
 
+## Diff Review
+
+```text
+Use $project-graph.
+Run --changed-since <base-ref> before reading source.
+Use the changed files, graph impact, and risk lines to choose what to inspect.
+Return review focus areas and likely tests in a compact list.
+```
+
+## Risk Check
+
+```text
+Use $project-graph.
+Run --risk for <path>.
+If risk is medium or high, run --read-next for the same path.
+Open only the files needed to explain the risk.
+```
+
+## Mermaid Sketch
+
+```text
+Use $project-graph.
+Run --around <path> --format mermaid --depth 2.
+Return the diagram only if the user benefits from a visual map.
+```
+
 ## Read Next
 
 ```text

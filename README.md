@@ -32,7 +32,7 @@ To use as a Codex skill, copy or symlink this folder into a Codex skills directo
 
 The generator writes these files into `.project-graph/`:
 
-- `manifest.json`: scan metadata and freshness inputs
+- `manifest.json`: scan metadata, freshness inputs, and source inventory hash
 - `nodes.json`: compact file and folder nodes
 - `edges.json`: containment and import edges
 - `summary.md`: low-token repo overview
@@ -44,7 +44,10 @@ Use query modes to avoid opening full JSON artifacts:
 
 ```powershell
 project-graph --root <repo> --output <repo>/.project-graph --around scripts/build_project_graph.py --depth 2
+project-graph --root <repo> --output <repo>/.project-graph --around app/models.py --format mermaid
 project-graph --root <repo> --output <repo>/.project-graph --impacted app/models.py
+project-graph --root <repo> --output <repo>/.project-graph --risk app/models.py
+project-graph --root <repo> --output <repo>/.project-graph --changed-since main
 project-graph --root <repo> --output <repo>/.project-graph --central --limit 10
 project-graph --root <repo> --output <repo>/.project-graph --orphans
 project-graph --root <repo> --output <repo>/.project-graph --read-next app/models.py
@@ -62,7 +65,10 @@ Query modes refresh stale artifacts first, then print compact Markdown rows.
 ## Query Modes
 
 - `--around <path>`: show a local neighborhood around one node.
+- `--around <path> --format mermaid`: render a compact Mermaid graph.
 - `--impacted <path>`: show importers likely affected by changing one node.
+- `--risk <path>`: estimate graph-based change risk.
+- `--changed-since <ref>`: summarize changed scanned files, import impact, and risk.
 - `--read-next <path>`: suggest the next files Codex should inspect.
 - `--why <path>`: explain why a node appears in graph results.
 - `--entrypoints`: detect likely application or CLI entrypoints.
