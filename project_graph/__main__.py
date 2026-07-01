@@ -1,6 +1,6 @@
 """Console entry point for Project Graph."""
 
-from scripts.build_project_graph import main
+from project_graph.cli import main
 
 
 if __name__ == "__main__":

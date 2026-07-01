@@ -5,7 +5,8 @@ Reusable Codex skill for generating compact project graph artifacts from a sourc
 ## Contents
 
 - `SKILL.md`: Codex skill instructions
-- `scripts/build_project_graph.py`: graph generator and query CLI
+- `scripts/build_project_graph.py`: backward-compatible CLI wrapper
+- `project_graph/`: reusable implementation modules
 - `references/config-schema.md`: optional scan configuration
 - `references/prompt-patterns.md`: compact prompts for graph-based analysis
 - `agents/openai.yaml`: agent metadata
@@ -27,6 +28,15 @@ project-graph --root <repo> --output <repo>/.project-graph
 ```
 
 To use as a Codex skill, copy or symlink this folder into a Codex skills directory so `SKILL.md` is at the skill root.
+
+## Package Layout
+
+- `project_graph/cli.py`: argument parsing and command orchestration.
+- `project_graph/config.py`: scan configuration, ignore rules, and freshness inventory.
+- `project_graph/imports.py`: language import extraction and resolution.
+- `project_graph/graph.py`: node/edge construction, artifact writing, and summaries.
+- `project_graph/queries.py`: low-token query modes.
+- `project_graph/viewer.py`: self-contained HTML graph viewer.
 
 ## Build Artifacts
 
