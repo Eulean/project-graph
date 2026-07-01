@@ -17,6 +17,8 @@ Use an optional `.project-graph/config.json` file in a repository root when the 
 ## Notes
 
 - Omit the file entirely if defaults are good enough.
+- Unknown keys fail fast with a config error instead of being ignored.
+- List fields must be arrays of strings; `max_file_bytes` must be a positive integer.
 - Use `include_extensions` to limit the scan to source and note files that matter.
 - Use `exclude_dirs` for vendor, build, cache, or generated folders.
 - Use `exclude_path_prefixes` for noisy nested paths that are not named consistently enough for `exclude_dirs`.

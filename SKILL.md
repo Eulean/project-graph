@@ -70,6 +70,8 @@ Read [references/config-schema.md](references/config-schema.md) when the reposit
 
 - Run the script from any working directory by passing `--root` and `--output`.
 - Query modes refresh stale artifacts first, then print compact Markdown.
+- Config files are validated; fix reported config errors before trusting graph output.
+- Import resolution supports Python package-relative imports and basic TypeScript `paths` aliases.
 - Keep the scan broad enough to capture architecture, but avoid vendored, generated, or cache directories.
 - Do not paste large JSON outputs into the conversation. Summarize them.
 - If a request needs semantic detail the graph cannot provide, identify the exact files to read next instead of scanning the whole repo.

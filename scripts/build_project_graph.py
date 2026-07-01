@@ -6,10 +6,12 @@ Build compact repository graph artifacts plus a lightweight HTML viewer.
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import hashlib
 import json
 import os
+import posixpath
 import re
 import subprocess
 import sys
@@ -70,6 +72,14 @@ DEFAULT_EXCLUDE_GLOBS = {
 
 DEFAULT_MAX_FILE_BYTES = 262_144
 
+CONFIG_KEYS = {
+    "include_extensions",
+    "exclude_dirs",
+    "exclude_path_prefixes",
+    "exclude_globs",
+    "max_file_bytes",
+}
+
 IMPORT_PATTERNS = {
     ".py": [
         re.compile(r"^\s*import\s+([a-zA-Z0-9_\.]+)", re.MULTILINE),
@@ -123,6 +133,12 @@ class Config:
     max_file_bytes: int
 
 
+@dataclass
+class TsConfig:
+    base_url: str | None
+    paths: list[tuple[str, list[str]]]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build repository graph artifacts.")
     parser.add_argument("--root", required=True, help="Repository root to scan")
@@ -162,6 +178,7 @@ def load_config(root: Path) -> Config:
 
     with config_path.open("r", encoding="utf-8") as handle:
         raw = json.load(handle)
+    validate_config(raw, config_path)
 
     return Config(
         include_extensions=set(raw.get("include_extensions", DEFAULT_INCLUDE_EXTENSIONS)),
@@ -170,6 +187,19 @@ def load_config(root: Path) -> Config:
         exclude_globs=set(raw.get("exclude_globs", DEFAULT_EXCLUDE_GLOBS)),
         max_file_bytes=int(raw.get("max_file_bytes", DEFAULT_MAX_FILE_BYTES)),
     )
+
+
+def validate_config(raw: object, config_path: Path) -> None:
+    if not isinstance(raw, dict):
+        raise ValueError(f"{config_path} must contain a JSON object")
+    unknown = sorted(set(raw) - CONFIG_KEYS)
+    if unknown:
+        raise ValueError(f"{config_path} has unsupported key(s): {', '.join(unknown)}")
+    for key in ("include_extensions", "exclude_dirs", "exclude_path_prefixes", "exclude_globs"):
+        if key in raw and (not isinstance(raw[key], list) or not all(isinstance(item, str) for item in raw[key])):
+            raise ValueError(f"{config_path} key `{key}` must be a list of strings")
+    if "max_file_bytes" in raw and (not isinstance(raw["max_file_bytes"], int) or raw["max_file_bytes"] <= 0):
+        raise ValueError(f"{config_path} key `max_file_bytes` must be a positive integer")
 
 
 def should_skip_dir(root: Path, path: Path, config: Config) -> bool:
@@ -225,6 +255,8 @@ def build_folder_nodes(root: Path, file_nodes: list[dict]) -> list[dict]:
 
 
 def extract_imports(path: Path, text: str) -> list[str]:
+    if path.suffix.lower() == ".py":
+        return extract_python_imports(text)
     patterns = IMPORT_PATTERNS.get(path.suffix.lower(), [])
     imports = []
     for pattern in patterns:
@@ -232,10 +264,48 @@ def extract_imports(path: Path, text: str) -> list[str]:
     return imports
 
 
+def extract_python_imports(text: str) -> list[str]:
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        patterns = IMPORT_PATTERNS[".py"]
+        imports = []
+        for pattern in patterns:
+            imports.extend(pattern.findall(text))
+        return imports
+
+    imports = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            prefix = "." * node.level
+            if node.module:
+                imports.append(f"{prefix}{node.module}")
+            elif node.level:
+                imports.extend(f"{prefix}{alias.name}" for alias in node.names)
+    return imports
+
+
 def resolve_relative_import(importer: str, target: str, file_lookup: set[str]) -> str | None:
-    importer_parent = Path(importer).parent
+    importer_parent = Path(importer).parent.as_posix()
+    if target.startswith(("./", "../")):
+        base_target = posixpath.normpath(posixpath.join(importer_parent, target))
+    elif target.startswith("."):
+        match = re.match(r"^(\.+)(.*)$", target)
+        if not match:
+            return None
+        dots, module_tail = match.groups()
+        base_target = importer_parent
+        for _ in range(max(len(dots) - 1, 0)):
+            base_target = posixpath.dirname(base_target)
+        module_tail = module_tail.lstrip(".").replace(".", "/")
+        if module_tail:
+            base_target = posixpath.join(base_target, module_tail)
+    else:
+        base_target = posixpath.normpath(posixpath.join(importer_parent, target))
     for suffix in IMPORTABLE_SUFFIXES:
-        candidate = (importer_parent / f"{target}{suffix}").as_posix()
+        candidate = f"{base_target}{suffix}"
         if candidate in file_lookup:
             return candidate
     return None
@@ -262,6 +332,31 @@ def load_go_module_name(root: Path) -> str | None:
     return match.group(1) if match else None
 
 
+def load_ts_config(root: Path) -> TsConfig:
+    tsconfig_path = root / "tsconfig.json"
+    if not tsconfig_path.exists():
+        return TsConfig(base_url=None, paths=[])
+    try:
+        raw = json.loads(tsconfig_path.read_text(encoding="utf-8", errors="ignore"))
+    except json.JSONDecodeError:
+        return TsConfig(base_url=None, paths=[])
+    compiler_options = raw.get("compilerOptions", {}) if isinstance(raw, dict) else {}
+    if not isinstance(compiler_options, dict):
+        return TsConfig(base_url=None, paths=[])
+    base_url = compiler_options.get("baseUrl")
+    if not isinstance(base_url, str):
+        base_url = None
+    raw_paths = compiler_options.get("paths", {})
+    paths = []
+    if isinstance(raw_paths, dict):
+        for pattern, replacements in raw_paths.items():
+            if isinstance(pattern, str) and isinstance(replacements, list):
+                valid_replacements = [item for item in replacements if isinstance(item, str)]
+                if valid_replacements:
+                    paths.append((pattern, valid_replacements))
+    return TsConfig(base_url=base_url, paths=paths)
+
+
 def resolve_go_import(target: str, go_module_name: str | None, folder_lookup: set[str]) -> str | None:
     if not go_module_name:
         return None
@@ -273,18 +368,40 @@ def resolve_go_import(target: str, go_module_name: str | None, folder_lookup: se
     return folder_id if folder_id in folder_lookup else None
 
 
+def resolve_ts_alias_import(target: str, ts_config: TsConfig, file_lookup: set[str]) -> str | None:
+    candidates = []
+    for pattern, replacements in ts_config.paths:
+        if "*" in pattern:
+            prefix, suffix = pattern.split("*", 1)
+            if not target.startswith(prefix) or not target.endswith(suffix):
+                continue
+            wildcard = target[len(prefix) : len(target) - len(suffix) if suffix else len(target)]
+            candidates.extend(replacement.replace("*", wildcard) for replacement in replacements)
+        elif target == pattern:
+            candidates.extend(replacements)
+
+    if ts_config.base_url:
+        candidates.append(posixpath.join(ts_config.base_url, target))
+
+    for candidate in candidates:
+        normalized = posixpath.normpath(candidate.lstrip("./"))
+        for suffix in IMPORTABLE_SUFFIXES:
+            resolved = f"{normalized}{suffix}"
+            if resolved in file_lookup:
+                return resolved
+    return None
+
+
 def resolve_import(
     importer: str,
     target: str,
     file_lookup: set[str],
     folder_lookup: set[str],
     go_module_name: str | None,
+    ts_config: TsConfig,
 ) -> str | None:
     if target.startswith("."):
-        trimmed = target.lstrip("./")
-        if not trimmed:
-            return None
-        return resolve_relative_import(importer, trimmed, file_lookup)
+        return resolve_relative_import(importer, target, file_lookup)
     if target.startswith("/"):
         return None
     if target.startswith(("http://", "https://")):
@@ -294,6 +411,11 @@ def resolve_import(
         relative = resolve_relative_import(importer, target, file_lookup)
         if relative:
             return relative
+
+    if Path(importer).suffix.lower() in {".js", ".jsx", ".ts", ".tsx"}:
+        alias_target = resolve_ts_alias_import(target, ts_config, file_lookup)
+        if alias_target:
+            return alias_target
 
     go_target = resolve_go_import(target, go_module_name, folder_lookup)
     if go_target:
@@ -340,6 +462,7 @@ def build_edges(
     raw_imports: dict[str, list[str]],
     folder_nodes: list[dict],
     go_module_name: str | None,
+    ts_config: TsConfig,
 ) -> list[dict]:
     edges = []
     file_lookup = {node["id"] for node in file_nodes}
@@ -365,7 +488,7 @@ def build_edges(
 
     for importer, imports in raw_imports.items():
         for target in imports:
-            resolved = resolve_import(importer, target, file_lookup, folder_lookup, go_module_name)
+            resolved = resolve_import(importer, target, file_lookup, folder_lookup, go_module_name, ts_config)
             if not resolved or resolved == importer:
                 continue
             edge = (importer, resolved, "imports")
@@ -449,11 +572,11 @@ def load_graph(output_dir: Path) -> tuple[list[dict], list[dict]]:
     return read_json(output_dir / "nodes.json"), read_json(output_dir / "edges.json")  # type: ignore[return-value]
 
 
-def build_graph(root: Path, config: Config, go_module_name: str | None) -> tuple[list[dict], list[dict], list[dict]]:
+def build_graph(root: Path, config: Config, go_module_name: str | None, ts_config: TsConfig) -> tuple[list[dict], list[dict], list[dict]]:
     file_nodes, raw_imports = collect_file_nodes(root, config)
     folder_nodes = build_folder_nodes(root, file_nodes)
     nodes = folder_nodes + sorted(file_nodes, key=lambda item: item["id"])
-    edges = build_edges(file_nodes, raw_imports, folder_nodes, go_module_name)
+    edges = build_edges(file_nodes, raw_imports, folder_nodes, go_module_name, ts_config)
     return file_nodes, nodes, edges
 
 
@@ -1393,8 +1516,13 @@ def main() -> int:
     output_dir = Path(args.output).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    config = load_config(root)
+    try:
+        config = load_config(root)
+    except (json.JSONDecodeError, ValueError) as error:
+        print(f"Config error: {error}", file=sys.stderr)
+        return 2
     go_module_name = load_go_module_name(root)
+    ts_config = load_ts_config(root)
     latest_mtime = latest_source_mtime(root, config)
     inventory = source_inventory(root, config)
     current_inventory_hash = inventory_hash(inventory)
@@ -1403,7 +1531,7 @@ def main() -> int:
         nodes, edges = load_graph(output_dir)
         print(f"Graph is already fresh at {output_dir}")
     else:
-        file_nodes, nodes, edges = build_graph(root, config, go_module_name)
+        file_nodes, nodes, edges = build_graph(root, config, go_module_name, ts_config)
         write_graph(root, output_dir, config, file_nodes, nodes, edges, latest_mtime, current_inventory_hash)
         print(f"Wrote graph artifacts to {output_dir}")
 

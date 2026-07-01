@@ -62,6 +62,10 @@ project-graph --root <repo> --output <repo>/.project-graph --export-bundle hando
 
 Query modes refresh stale artifacts first, then print compact Markdown rows.
 
+## Import Resolution
+
+The scanner resolves containment edges for every scanned file and import edges for common source languages. Python imports are parsed with `ast`, including package-relative forms like `from . import local` and `from .. import shared`. JavaScript and TypeScript imports support relative paths and basic `tsconfig.json` `compilerOptions.paths` aliases.
+
 ## Query Modes
 
 - `--around <path>`: show a local neighborhood around one node.

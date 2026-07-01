@@ -5,7 +5,7 @@ import json
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +19,14 @@ class BuildProjectGraphTests(unittest.TestCase):
         with patch("sys.argv", args), redirect_stdout(stdout):
             code = build_project_graph.main()
         return code, stdout.getvalue()
+
+    def run_cli_with_stderr(self, root: Path, output: Path, *extra_args: str) -> tuple[int, str, str]:
+        args = ["build_project_graph.py", "--root", str(root), "--output", str(output), *extra_args]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("sys.argv", args), redirect_stdout(stdout), redirect_stderr(stderr):
+            code = build_project_graph.main()
+        return code, stdout.getvalue(), stderr.getvalue()
 
     def test_builds_python_import_edges(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -36,6 +44,64 @@ class BuildProjectGraphTests(unittest.TestCase):
                 {"source": "app/main.py", "target": "app/util.py", "type": "imports"},
                 edges,
             )
+
+    def test_builds_python_relative_import_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "app" / "feature").mkdir(parents=True)
+            (root / "app" / "__init__.py").write_text("", encoding="utf-8")
+            (root / "app" / "feature" / "__init__.py").write_text("", encoding="utf-8")
+            (root / "app" / "feature" / "view.py").write_text(
+                "from . import local\nfrom .. import shared\n",
+                encoding="utf-8",
+            )
+            (root / "app" / "feature" / "local.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "app" / "shared.py").write_text("VALUE = 2\n", encoding="utf-8")
+
+            code, _ = self.run_cli(root, root / ".project-graph")
+
+            self.assertEqual(code, 0)
+            edges = json.loads((root / ".project-graph" / "edges.json").read_text(encoding="utf-8"))
+            self.assertIn(
+                {"source": "app/feature/view.py", "target": "app/feature/local.py", "type": "imports"},
+                edges,
+            )
+            self.assertIn(
+                {"source": "app/feature/view.py", "target": "app/shared.py", "type": "imports"},
+                edges,
+            )
+
+    def test_builds_tsconfig_path_alias_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src" / "lib").mkdir(parents=True)
+            (root / "src" / "main.ts").write_text("import { helper } from '@/lib/helper'\n", encoding="utf-8")
+            (root / "src" / "lib" / "helper.ts").write_text("export const helper = 1\n", encoding="utf-8")
+            (root / "tsconfig.json").write_text(
+                json.dumps({"compilerOptions": {"baseUrl": ".", "paths": {"@/*": ["src/*"]}}}),
+                encoding="utf-8",
+            )
+
+            code, _ = self.run_cli(root, root / ".project-graph")
+
+            self.assertEqual(code, 0)
+            edges = json.loads((root / ".project-graph" / "edges.json").read_text(encoding="utf-8"))
+            self.assertIn(
+                {"source": "src/main.ts", "target": "src/lib/helper.ts", "type": "imports"},
+                edges,
+            )
+
+    def test_config_validation_reports_unknown_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / ".project-graph").mkdir()
+            (root / ".project-graph" / "config.json").write_text(json.dumps({"surprise": True}), encoding="utf-8")
+
+            code, _, error = self.run_cli_with_stderr(root, root / ".project-graph")
+
+            self.assertEqual(code, 2)
+            self.assertIn("Config error:", error)
+            self.assertIn("unsupported key", error)
 
     def test_query_around_prints_compact_neighbors(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
