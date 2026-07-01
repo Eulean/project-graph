@@ -13,7 +13,7 @@ Build compact graph artifacts for a repository, then answer from those artifacts
 
 1. Check whether the repository already contains `.project-graph/manifest.json` and `.project-graph/summary.md`.
 2. If the graph is missing or stale, run `scripts/build_project_graph.py --root <repo> --output <repo>/.project-graph`.
-3. For scoped questions, prefer a query command before opening JSON: `--around`, `--impacted`, `--central`, or `--orphans`.
+3. For scoped questions, prefer a query command before opening JSON: `--around`, `--impacted`, `--read-next`, `--why`, `--entrypoints`, `--missing-tests`, `--docs-for`, `--owners`, `--confidence`, `--central`, or `--orphans`.
 4. Read the generated summary and only open `nodes.json` or `edges.json` when the summary or query output is insufficient.
 5. Answer from graph artifacts first. Read source files only for nodes directly relevant to the user's request.
 6. Keep responses concise and scoped. Prefer returning changed nodes, important neighbors, and likely impact rather than broad repo narration.
@@ -25,6 +25,9 @@ Build compact graph artifacts for a repository, then answer from those artifacts
 - Use `edges.json` to trace containment and import relationships.
 - Use `--around <path> --depth 2` for a compact local neighborhood.
 - Use `--impacted <path>` to list importers likely affected by a change.
+- Use `--read-next <path>` to choose the next source files to inspect.
+- Use `--why <path>` when you need to justify why a node is relevant.
+- Use `--entrypoints`, `--missing-tests`, `--docs-for <path>`, `--owners`, or `--confidence` to answer targeted repo-navigation questions.
 - Use `--central` or `--orphans` for small prioritized lists.
 - Open `viewer.html` in a browser when visual navigation is useful.
 - Prefer a local graph around one path or module before discussing the entire repository.
@@ -37,6 +40,8 @@ Prefer one of these compact outputs unless the user asks for more:
 - A local graph around one file or folder
 - The top impacted nodes for a planned change
 - A short list of orphaned or highly referenced files
+- The next 3-7 files to read and why
+- A confidence note when graph coverage looks weak
 
 ## Staleness Rules
 

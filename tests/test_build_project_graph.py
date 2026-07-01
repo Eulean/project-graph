@@ -73,6 +73,64 @@ class BuildProjectGraphTests(unittest.TestCase):
             self.assertIn("`lonely.py`", output)
             self.assertNotIn("ignored.py", output)
 
+    def test_entrypoints_and_missing_tests_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "app.py").write_text("print('hello')\n", encoding="utf-8")
+            (root / "service.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "tests").mkdir()
+            (root / "tests" / "test_app.py").write_text("def test_app(): pass\n", encoding="utf-8")
+
+            entry_code, entry_output = self.run_cli(root, root / ".project-graph", "--entrypoints")
+            test_code, test_output = self.run_cli(root, root / ".project-graph", "--missing-tests")
+
+            self.assertEqual(entry_code, 0)
+            self.assertIn("`app.py`", entry_output)
+            self.assertEqual(test_code, 0)
+            self.assertIn("`service.py`", test_output)
+            self.assertNotIn("`app.py`", test_output)
+
+    def test_docs_for_and_owners_queries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "README.md").write_text("# Demo\n", encoding="utf-8")
+            (root / "CODEOWNERS").write_text("app/* @team/app\n", encoding="utf-8")
+            (root / "app").mkdir()
+            (root / "app" / "README.md").write_text("# App\n", encoding="utf-8")
+            (root / "app" / "service.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+            docs_code, docs_output = self.run_cli(root, root / ".project-graph", "--docs-for", "app/service.py")
+            owners_code, owners_output = self.run_cli(root, root / ".project-graph", "--owners")
+
+            self.assertEqual(docs_code, 0)
+            self.assertIn("`README.md`", docs_output)
+            self.assertIn("`app/README.md`", docs_output)
+            self.assertEqual(owners_code, 0)
+            self.assertIn("`app/service.py` -> @team/app", owners_output)
+
+    def test_read_next_why_confidence_and_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "README.md").write_text("# Demo\n", encoding="utf-8")
+            (root / "main.py").write_text("import util\n", encoding="utf-8")
+            (root / "util.py").write_text("VALUE = 1\n", encoding="utf-8")
+            bundle_dir = root / "bundle"
+
+            read_code, read_output = self.run_cli(root, root / ".project-graph", "--read-next", "main.py")
+            why_code, why_output = self.run_cli(root, root / ".project-graph", "--why", "util.py")
+            confidence_code, confidence_output = self.run_cli(root, root / ".project-graph", "--confidence")
+            bundle_code, bundle_output = self.run_cli(root, root / ".project-graph", "--export-bundle", str(bundle_dir), "--bundle-for", "main.py")
+
+            self.assertEqual(read_code, 0)
+            self.assertIn("`util.py` - imported by target", read_output)
+            self.assertEqual(why_code, 0)
+            self.assertIn("`main.py` imports `util.py`", why_output)
+            self.assertEqual(confidence_code, 0)
+            self.assertIn("Graph Confidence", confidence_output)
+            self.assertEqual(bundle_code, 0)
+            self.assertIn("Export Bundle", bundle_output)
+            self.assertTrue((bundle_dir / "prompt.md").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

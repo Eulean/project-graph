@@ -41,6 +41,24 @@ Only open raw files named by the query output.
 Return the result in 3-7 lines.
 ```
 
+## Read Next
+
+```text
+Use $project-graph.
+Run --read-next for <path>.
+Open only the top files that are needed to answer the user.
+Explain why each file matters in one short phrase.
+```
+
+## Review Entry
+
+```text
+Use $project-graph.
+Run --entrypoints, --missing-tests, and --confidence before reading source.
+Use the result to pick the smallest useful source set.
+Return risks and next reads, not broad narration.
+```
+
 ## Repo Overview
 
 ```text

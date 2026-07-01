@@ -47,9 +47,34 @@ project-graph --root <repo> --output <repo>/.project-graph --around scripts/buil
 project-graph --root <repo> --output <repo>/.project-graph --impacted app/models.py
 project-graph --root <repo> --output <repo>/.project-graph --central --limit 10
 project-graph --root <repo> --output <repo>/.project-graph --orphans
+project-graph --root <repo> --output <repo>/.project-graph --read-next app/models.py
+project-graph --root <repo> --output <repo>/.project-graph --why app/models.py
+project-graph --root <repo> --output <repo>/.project-graph --entrypoints
+project-graph --root <repo> --output <repo>/.project-graph --missing-tests
+project-graph --root <repo> --output <repo>/.project-graph --docs-for app/models.py
+project-graph --root <repo> --output <repo>/.project-graph --owners
+project-graph --root <repo> --output <repo>/.project-graph --confidence
+project-graph --root <repo> --output <repo>/.project-graph --export-bundle handoff --bundle-for app/models.py
 ```
 
 Query modes refresh stale artifacts first, then print compact Markdown rows.
+
+## Query Modes
+
+- `--around <path>`: show a local neighborhood around one node.
+- `--impacted <path>`: show importers likely affected by changing one node.
+- `--read-next <path>`: suggest the next files Codex should inspect.
+- `--why <path>`: explain why a node appears in graph results.
+- `--entrypoints`: detect likely application or CLI entrypoints.
+- `--missing-tests`: list source files without an obvious nearby/named test.
+- `--docs-for <path>`: find README or docs files likely relevant to a node.
+- `--owners`: summarize matching `CODEOWNERS` hints.
+- `--confidence`: report graph coverage and confidence signals.
+- `--export-bundle <dir-or.zip>`: write a small handoff bundle.
+
+## Roadmap
+
+Future larger upgrades include generated architecture docs, CI comments, semantic summaries, local embedding search, graph-backed Codex memory, boundary linting, and multi-agent task routing.
 
 ## Test
 
