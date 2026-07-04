@@ -18,6 +18,7 @@ Use an optional `.project-graph/config.json` file in a repository root when the 
 
 - Omit the file entirely if defaults are good enough.
 - Use `include_extensions` to limit the scan to source and note files that matter.
+- Known config filenames such as `package.json`, `pyproject.toml`, `tsconfig.json`, `Dockerfile`, and `Makefile` are included even when their extensions are not listed.
 - Use `exclude_dirs` for vendor, build, cache, or generated folders.
 - Use `exclude_path_prefixes` for noisy nested paths that are not named consistently enough for `exclude_dirs`.
 - Use `exclude_globs` for generated files that live inside otherwise useful folders.

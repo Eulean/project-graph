@@ -31,6 +31,33 @@ Read raw source only if the graph cannot explain a dependency.
 Return a short impact summary.
 ```
 
+## Test Planning
+
+```text
+Use $project-graph.
+Refresh the graph if needed.
+For <path>, inspect nearby `tests` edges and test-like nodes before choosing where to add or update coverage.
+Read only the likely test and source files named by the graph.
+```
+
+## Frontend Routes
+
+```text
+Use $project-graph.
+Refresh the graph if needed.
+Inspect `declares-route` and `renders` edges around <route-or-component>.
+Summarize the route/component neighborhood before opening raw source.
+```
+
+## Build And Tooling
+
+```text
+Use $project-graph.
+Refresh the graph if needed.
+Inspect `configures` and `runs` edges before answering build, lint, test, or script questions.
+Open package/config files only when the graph is not enough.
+```
+
 ## Query First
 
 ```text

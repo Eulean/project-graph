@@ -1,13 +1,13 @@
 ---
 name: project-graph
-description: Build and reuse an Obsidian-style project graph for repository navigation, architecture mapping, impact analysis, and token-efficient code understanding. Use when Codex needs to understand a codebase across many files, answer questions from cached repo structure instead of rereading everything, generate a local or global graph view, detect central or orphaned files, or refresh graph artifacts after source changes.
+description: Build and reuse an Obsidian-style project graph for repository navigation, architecture mapping, impact analysis, and token-efficient code understanding. Use when Codex needs to understand a codebase across many files, answer questions from cached repo structure instead of rereading everything, generate a local or global graph view, detect central or orphaned files, inspect config/test/route/component relationships, or refresh graph artifacts after source changes.
 ---
 
 # Project Graph
 
 ## Overview
 
-Build compact graph artifacts for a repository, then answer from those artifacts before reading raw source files. Prefer cached graph context for low-token architecture questions, dependency exploration, and change-impact analysis.
+Build compact graph artifacts for a repository, then answer from those artifacts before reading raw source files. Prefer cached graph context for low-token architecture questions, dependency exploration, change-impact analysis, and quick discovery of config, tests, package scripts, routes, and rendered components.
 
 ## Workflow
 
@@ -16,7 +16,8 @@ Build compact graph artifacts for a repository, then answer from those artifacts
 3. For scoped questions, prefer a query command before opening JSON: `--around`, `--impacted`, `--central`, or `--orphans`.
 4. Read the generated summary and only open `nodes.json` or `edges.json` when the summary or query output is insufficient.
 5. Answer from graph artifacts first. Read source files only for nodes directly relevant to the user's request.
-6. Keep responses concise and scoped. Prefer returning changed nodes, important neighbors, and likely impact rather than broad repo narration.
+6. Use enriched edge types when they fit the question: `tests`, `configures`, `runs`, `declares-route`, and `renders`.
+7. Keep responses concise and scoped. Prefer returning changed nodes, important neighbors, and likely impact rather than broad repo narration.
 
 ## Use The Graph Efficiently
 
@@ -28,6 +29,9 @@ Build compact graph artifacts for a repository, then answer from those artifacts
 - Use `--central` or `--orphans` for small prioritized lists.
 - Open `viewer.html` in a browser when visual navigation is useful.
 - Prefer a local graph around one path or module before discussing the entire repository.
+- For frontend repos, inspect `declares-route` and `renders` edges before reading router/component files.
+- For test planning, inspect `tests` edges and nearby test nodes before inventing new test locations.
+- For build or tooling questions, inspect `configures` and `runs` edges first.
 
 ## Default Outputs
 
@@ -53,6 +57,16 @@ The bundled script writes these files into `.project-graph/`:
 - `edges.json`: compact edge list
 - `summary.md`: human-readable repo overview
 - `viewer.html`: self-contained local graph viewer
+
+Enriched graphs may include these relationship types:
+
+- `contains`: folder/file containment
+- `imports`: resolved source import relationships
+- `tests`: test files linked to likely source files by naming convention
+- `configures`: config or manifest files connected to the repository root
+- `runs`: package scripts linked to local entrypoint files when detectable
+- `declares-route`: frontend route declarations linked to route nodes
+- `renders`: React-style component usage linked to imported component files
 
 Read [references/config-schema.md](references/config-schema.md) when the repository needs custom include or exclude behavior. Read [references/prompt-patterns.md](references/prompt-patterns.md) when you need low-token prompt templates for repeated graph work.
 

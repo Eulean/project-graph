@@ -73,6 +73,79 @@ class BuildProjectGraphTests(unittest.TestCase):
             self.assertIn("`lonely.py`", output)
             self.assertNotIn("ignored.py", output)
 
+    def test_adds_test_and_config_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            (root / "src" / "math.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            (root / "tests" / "test_math.py").write_text("from src.math import add\n", encoding="utf-8")
+            (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+
+            code, _ = self.run_cli(root, root / ".project-graph")
+
+            self.assertEqual(code, 0)
+            nodes = json.loads((root / ".project-graph" / "nodes.json").read_text(encoding="utf-8"))
+            edges = json.loads((root / ".project-graph" / "edges.json").read_text(encoding="utf-8"))
+            self.assertIn(
+                {"source": "tests/test_math.py", "target": "src/math.py", "type": "tests"},
+                edges,
+            )
+            self.assertIn(
+                {"source": "pyproject.toml", "target": ".", "type": "configures"},
+                edges,
+            )
+            roles = {node["id"]: node.get("role") for node in nodes}
+            self.assertEqual(roles["tests/test_math.py"], "test")
+            self.assertEqual(roles["pyproject.toml"], "config")
+
+    def test_adds_frontend_route_and_render_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "src").mkdir()
+            (root / "src" / "App.tsx").write_text(
+                "import Home from './Home'\n"
+                "export function App() {\n"
+                "  return <Route path=\"/\" element={<Home />} />\n"
+                "}\n",
+                encoding="utf-8",
+            )
+            (root / "src" / "Home.tsx").write_text("export default function Home() { return <main /> }\n", encoding="utf-8")
+
+            code, _ = self.run_cli(root, root / ".project-graph")
+
+            self.assertEqual(code, 0)
+            nodes = json.loads((root / ".project-graph" / "nodes.json").read_text(encoding="utf-8"))
+            edges = json.loads((root / ".project-graph" / "edges.json").read_text(encoding="utf-8"))
+            self.assertIn({"id": "route:/", "type": "route", "label": "/"}, nodes)
+            self.assertIn(
+                {"source": "src/App.tsx", "target": "route:/", "type": "declares-route"},
+                edges,
+            )
+            self.assertIn(
+                {"source": "route:/", "target": "src/Home.tsx", "type": "renders"},
+                edges,
+            )
+
+    def test_package_scripts_link_to_local_entrypoints(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "scripts").mkdir()
+            (root / "scripts" / "seed.ts").write_text("console.log('seed')\n", encoding="utf-8")
+            (root / "package.json").write_text(
+                json.dumps({"scripts": {"seed": "tsx scripts/seed.ts"}}),
+                encoding="utf-8",
+            )
+
+            code, _ = self.run_cli(root, root / ".project-graph")
+
+            self.assertEqual(code, 0)
+            edges = json.loads((root / ".project-graph" / "edges.json").read_text(encoding="utf-8"))
+            self.assertIn(
+                {"source": "package.json", "target": "scripts/seed.ts", "type": "runs"},
+                edges,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

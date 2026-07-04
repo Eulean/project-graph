@@ -110,6 +110,41 @@ IMPORTABLE_SUFFIXES = {
     "/index.tsx",
 }
 
+CONFIG_FILES = {
+    ".babelrc",
+    ".eslintrc",
+    ".prettierrc",
+    "Dockerfile",
+    "Makefile",
+    "biome.json",
+    "docker-compose.yml",
+    "eslint.config.js",
+    "jest.config.js",
+    "next.config.js",
+    "package.json",
+    "playwright.config.ts",
+    "pyproject.toml",
+    "pytest.ini",
+    "ruff.toml",
+    "tsconfig.json",
+    "vite.config.js",
+    "vite.config.ts",
+}
+
+TEST_MARKERS = (
+    ".spec.",
+    ".test.",
+    "_spec.",
+    "_test.",
+)
+
+ROUTE_ELEMENT_RE = re.compile(
+    r"<Route\b[^>]*\bpath\s*=\s*[\"']([^\"']+)[\"'][^>]*\belement\s*=\s*\{\s*<([A-Z][A-Za-z0-9_]*)",
+    re.DOTALL,
+)
+IMPORT_NAME_RE = re.compile(r"import\s+(?:\{\s*([^}]+)\s*\}|([A-Z][A-Za-z0-9_]*))\s+from\s+[\"']([^\"']+)[\"']")
+JSX_TAG_RE = re.compile(r"<([A-Z][A-Za-z0-9_]*)\b")
+
 
 @dataclass
 class Config:
@@ -166,7 +201,8 @@ def should_skip_dir(root: Path, path: Path, config: Config) -> bool:
 
 def should_include_file(path: Path, config: Config) -> bool:
     if path.suffix.lower() not in config.include_extensions:
-        return False
+        if path.name not in CONFIG_FILES and not path.name.endswith((".config.js", ".config.ts", ".config.mjs")):
+            return False
     for pattern in config.exclude_globs:
         if fnmatch.fnmatch(path.name, pattern):
             return False
@@ -215,6 +251,14 @@ def extract_imports(path: Path, text: str) -> list[str]:
     for pattern in patterns:
         imports.extend(pattern.findall(text))
     return imports
+
+
+def add_edge(edges: list[dict], seen: set[tuple[str, str, str]], source: str, target: str, edge_type: str) -> None:
+    edge = (source, target, edge_type)
+    if edge in seen or source == target:
+        return
+    seen.add(edge)
+    edges.append({"source": source, "target": target, "type": edge_type})
 
 
 def resolve_relative_import(importer: str, target: str, file_lookup: set[str]) -> str | None:
@@ -287,6 +331,132 @@ def resolve_import(
     return resolve_python_import(target, file_lookup)
 
 
+def imported_symbol_targets(importer: str, text: str, file_lookup: set[str], folder_lookup: set[str], go_module_name: str | None) -> dict[str, str]:
+    symbols: dict[str, str] = {}
+    for named_group, default_group, target in IMPORT_NAME_RE.findall(text):
+        resolved = resolve_import(importer, target, file_lookup, folder_lookup, go_module_name)
+        if not resolved:
+            continue
+        if default_group:
+            symbols[default_group] = resolved
+        for raw_name in named_group.split(","):
+            name = raw_name.strip().split(" as ")[-1].strip()
+            if name:
+                symbols[name] = resolved
+    return symbols
+
+
+def is_test_file(node_id: str) -> bool:
+    name = Path(node_id).name
+    return name.startswith("test_") or name.endswith("_test.py") or any(marker in name for marker in TEST_MARKERS)
+
+
+def source_candidates_for_test(node_id: str, file_lookup: set[str]) -> list[str]:
+    path = Path(node_id)
+    name = path.name
+    candidates = []
+    stems = {path.stem}
+    for marker in TEST_MARKERS:
+        if marker in name:
+            stems.add(name.split(marker, 1)[0])
+    if path.stem.startswith("test_"):
+        stems.add(path.stem[5:])
+    if path.stem.endswith("_test"):
+        stems.add(path.stem[:-5])
+
+    suffixes = [".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".cs", ".cpp", ".c"]
+    parents = [path.parent, Path("src"), Path("app"), Path("lib"), Path(".")]
+    for stem in sorted(stems):
+        if not stem or stem == path.stem:
+            continue
+        for parent in parents:
+            for suffix in suffixes:
+                candidate = (parent / f"{stem}{suffix}").as_posix()
+                if candidate in file_lookup and candidate != node_id:
+                    candidates.append(candidate)
+    return sorted(set(candidates))
+
+
+def package_script_targets(root: Path, package_id: str, file_lookup: set[str]) -> list[str]:
+    path = root / package_id
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    scripts = data.get("scripts")
+    if not isinstance(scripts, dict):
+        return []
+    targets = []
+    for command in scripts.values():
+        if not isinstance(command, str):
+            continue
+        for token in re.findall(r"[\w./-]+\.(?:js|jsx|ts|tsx|py|go|rs|sh|ps1)", command):
+            normalized = token.lstrip("./")
+            if normalized in file_lookup:
+                targets.append(normalized)
+    return sorted(set(targets))
+
+
+def route_node(route_path: str) -> dict:
+    return {"id": f"route:{route_path}", "type": "route", "label": route_path}
+
+
+def enrich_graph(
+    root: Path,
+    nodes: list[dict],
+    edges: list[dict],
+    seen: set[tuple[str, str, str]],
+    go_module_name: str | None,
+) -> None:
+    file_nodes = [node for node in nodes if node["type"] == "file"]
+    file_lookup = {node["id"] for node in file_nodes}
+    folder_lookup = {node["id"] for node in nodes if node["type"] == "folder"}
+    node_lookup = {node["id"]: node for node in nodes}
+
+    for node in file_nodes:
+        node_id = node["id"]
+        file_path = root / node_id
+        text = ""
+        try:
+            text = file_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            pass
+
+        if Path(node_id).name in CONFIG_FILES or node_id.endswith((".config.js", ".config.ts", ".config.mjs")):
+            node["role"] = "config"
+            add_edge(edges, seen, node_id, ".", "configures")
+
+        if is_test_file(node_id):
+            node["role"] = "test"
+            for candidate in source_candidates_for_test(node_id, file_lookup):
+                add_edge(edges, seen, node_id, candidate, "tests")
+
+        if Path(node_id).name == "package.json":
+            node["role"] = "manifest"
+            for target in package_script_targets(root, node_id, file_lookup):
+                add_edge(edges, seen, node_id, target, "runs")
+
+        if node["ext"] not in {".js", ".jsx", ".ts", ".tsx"} or not text:
+            continue
+
+        symbol_targets = imported_symbol_targets(node_id, text, file_lookup, folder_lookup, go_module_name)
+        for component_name in sorted(set(JSX_TAG_RE.findall(text))):
+            target = symbol_targets.get(component_name)
+            if target:
+                add_edge(edges, seen, node_id, target, "renders")
+
+        for route_path, component_name in ROUTE_ELEMENT_RE.findall(text):
+            route_id = f"route:{route_path}"
+            if route_id not in node_lookup:
+                route = route_node(route_path)
+                node_lookup[route_id] = route
+                nodes.append(route)
+            add_edge(edges, seen, node_id, route_id, "declares-route")
+            target = symbol_targets.get(component_name)
+            if target:
+                add_edge(edges, seen, route_id, target, "renders")
+
+
 def collect_file_nodes(root: Path, config: Config) -> tuple[list[dict], dict[str, list[str]]]:
     file_nodes = []
     raw_imports: dict[str, list[str]] = {}
@@ -321,6 +491,7 @@ def collect_file_nodes(root: Path, config: Config) -> tuple[list[dict], dict[str
 
 
 def build_edges(
+    root: Path,
     file_nodes: list[dict],
     raw_imports: dict[str, list[str]],
     folder_nodes: list[dict],
@@ -334,18 +505,12 @@ def build_edges(
     for node in file_nodes:
         path = Path(node["id"])
         parent_id = "." if str(path.parent) == "." else path.parent.as_posix()
-        edge = (parent_id, node["id"], "contains")
-        if edge not in seen:
-            seen.add(edge)
-            edges.append({"source": parent_id, "target": node["id"], "type": "contains"})
+        add_edge(edges, seen, parent_id, node["id"], "contains")
 
         while str(path.parent) != ".":
             child = path.parent.as_posix()
             parent = "." if str(path.parent.parent) == "." else path.parent.parent.as_posix()
-            folder_edge = (parent, child, "contains")
-            if folder_edge not in seen:
-                seen.add(folder_edge)
-                edges.append({"source": parent, "target": child, "type": "contains"})
+            add_edge(edges, seen, parent, child, "contains")
             path = path.parent
 
     for importer, imports in raw_imports.items():
@@ -353,11 +518,7 @@ def build_edges(
             resolved = resolve_import(importer, target, file_lookup, folder_lookup, go_module_name)
             if not resolved or resolved == importer:
                 continue
-            edge = (importer, resolved, "imports")
-            if edge in seen:
-                continue
-            seen.add(edge)
-            edges.append({"source": importer, "target": resolved, "type": "imports"})
+            add_edge(edges, seen, importer, resolved, "imports")
 
     return edges
 
@@ -400,7 +561,9 @@ def build_graph(root: Path, config: Config, go_module_name: str | None) -> tuple
     file_nodes, raw_imports = collect_file_nodes(root, config)
     folder_nodes = build_folder_nodes(root, file_nodes)
     nodes = folder_nodes + sorted(file_nodes, key=lambda item: item["id"])
-    edges = build_edges(file_nodes, raw_imports, folder_nodes, go_module_name)
+    edges = build_edges(root, file_nodes, raw_imports, folder_nodes, go_module_name)
+    seen = {(edge["source"], edge["target"], edge["type"]) for edge in edges}
+    enrich_graph(root, nodes, edges, seen, go_module_name)
     return file_nodes, nodes, edges
 
 
@@ -548,21 +711,32 @@ def run_query(args: argparse.Namespace, nodes: list[dict], edges: list[dict]) ->
 def compute_summary(root: Path, nodes: list[dict], edges: list[dict]) -> str:
     files = [node for node in nodes if node["type"] == "file"]
     folders = [node for node in nodes if node["type"] == "folder"]
+    routes = [node for node in nodes if node["type"] == "route"]
     imports_in = Counter()
     imports_out = Counter()
+    edge_types = Counter(edge["type"] for edge in edges)
     folder_counts = Counter()
     orphan_files = []
+    test_edges = []
+    config_files = []
+    route_edges = []
 
     for edge in edges:
         if edge["type"] == "imports":
             imports_out[edge["source"]] += 1
             imports_in[edge["target"]] += 1
+        elif edge["type"] == "tests":
+            test_edges.append(edge)
+        elif edge["type"] == "declares-route":
+            route_edges.append(edge)
 
     for file_node in files:
         parent = Path(file_node["id"]).parent.as_posix()
         folder_counts[parent or "."] += 1
         if imports_in[file_node["id"]] == 0 and imports_out[file_node["id"]] == 0:
             orphan_files.append(file_node["id"])
+        if file_node.get("role") in {"config", "manifest"}:
+            config_files.append(file_node["id"])
 
     top_in = [node for node, _ in imports_in.most_common(5)]
     top_out = [node for node, _ in imports_out.most_common(5)]
@@ -573,16 +747,32 @@ def compute_summary(root: Path, nodes: list[dict], edges: list[dict]) -> str:
         "",
         f"- Files scanned: {len(files)}",
         f"- Folders captured: {max(len(folders) - 1, 0)}",
+        f"- Route nodes: {len(routes)}",
         f"- Total edges: {len(edges)}",
         f"- Import edges: {sum(1 for edge in edges if edge['type'] == 'imports')}",
         "",
-        "## Largest Folders",
+        "## Edge Types",
     ]
+    lines.extend(f"- `{edge_type}`: {count}" for edge_type, count in edge_types.most_common() or [("none", 0)])
+    lines.extend([
+        "",
+        "## Largest Folders",
+    ])
     lines.extend(f"- `{folder}`" for folder in biggest_folders or ["."])
     lines.extend(["", "## Most Referenced Files"])
     lines.extend(f"- `{item}`" for item in top_in or ["None detected"])
     lines.extend(["", "## Most Connected Importers"])
     lines.extend(f"- `{item}`" for item in top_out or ["None detected"])
+    lines.extend(["", "## Config And Manifest Files"])
+    lines.extend(f"- `{item}`" for item in config_files[:10] or ["None detected"])
+    lines.extend(["", "## Test Links"])
+    lines.extend(f"- `{edge['source']}` tests `{edge['target']}`" for edge in test_edges[:10] or [])
+    if not test_edges:
+        lines.append("- None detected")
+    lines.extend(["", "## Route Declarations"])
+    lines.extend(f"- `{edge['source']}` declares `{edge['target']}`" for edge in route_edges[:10] or [])
+    if not route_edges:
+        lines.append("- None detected")
     lines.extend(["", "## Orphan Candidates"])
     lines.extend(f"- `{item}`" for item in orphan_files[:10] or ["None detected"])
     return "\n".join(lines) + "\n"
@@ -595,7 +785,9 @@ def build_manifest(root: Path, output_dir: Path, config: Config, files: list[dic
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_latest_mtime": latest_mtime,
         "file_count": len(files),
+        "route_count": sum(1 for edge in edges if edge["type"] == "declares-route"),
         "edge_count": len(edges),
+        "edge_types": dict(sorted(Counter(edge["type"] for edge in edges).items())),
         "include_extensions": sorted(config.include_extensions),
         "exclude_dirs": sorted(config.exclude_dirs),
         "exclude_path_prefixes": sorted(config.exclude_path_prefixes),
@@ -622,6 +814,7 @@ def viewer_html(nodes: list[dict], edges: list[dict], title: str) -> str:
       --line: rgba(27, 67, 50, 0.22);
       --folder: #c97a44;
       --file: #215a6d;
+      --route: #7c3aed;
       --accent: #1b4332;
     }}
     * {{ box-sizing: border-box; }}
@@ -705,10 +898,12 @@ def viewer_html(nodes: list[dict], edges: list[dict], title: str) -> str:
         <option value="all">All</option>
         <option value="folder">Folders</option>
         <option value="file">Files</option>
+        <option value="route">Routes</option>
       </select>
       <div class="legend">
         <span><span class="swatch" style="background: var(--folder)"></span>Folder</span>
         <span><span class="swatch" style="background: var(--file)"></span>File</span>
+        <span><span class="swatch" style="background: var(--route)"></span>Route</span>
       </div>
       <div id="details" class="details">Select a node to inspect it.</div>
     </aside>
@@ -783,9 +978,9 @@ def viewer_html(nodes: list[dict], edges: list[dict], title: str) -> str:
       for (const node of nodes) {{
         if (!visible(node)) continue;
         const focus = selected && (node.id === selected.id || neighbors.get(selected.id).has(node.id));
-        const radius = node.type === "folder" ? 6 : 4;
+        const radius = node.type === "folder" ? 6 : (node.type === "route" ? 5 : 4);
         ctx.beginPath();
-        ctx.fillStyle = node.type === "folder" ? "#c97a44" : "#215a6d";
+        ctx.fillStyle = node.type === "folder" ? "#c97a44" : (node.type === "route" ? "#7c3aed" : "#215a6d");
         ctx.globalAlpha = selected ? (focus ? 1 : 0.18) : 0.88;
         ctx.arc(node.x, node.y, radius + (hovered === node ? 2 : 0), 0, Math.PI * 2);
         ctx.fill();
@@ -841,7 +1036,7 @@ def viewer_html(nodes: list[dict], edges: list[dict], title: str) -> str:
       hovered = null;
       for (const node of nodes) {{
         if (!visible(node)) continue;
-        const radius = node.type === "folder" ? 8 : 6;
+        const radius = node.type === "folder" ? 8 : (node.type === "route" ? 7 : 6);
         if (Math.hypot(node.x - x, node.y - y) <= radius) {{
           hovered = node;
         }}

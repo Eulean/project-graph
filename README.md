@@ -34,7 +34,7 @@ The generator writes these files into `.project-graph/`:
 
 - `manifest.json`: scan metadata and freshness inputs
 - `nodes.json`: compact file and folder nodes
-- `edges.json`: containment and import edges
+- `edges.json`: containment, import, test, config, package-script, route, and render edges
 - `summary.md`: low-token repo overview
 - `viewer.html`: self-contained local graph viewer
 
@@ -50,6 +50,16 @@ project-graph --root <repo> --output <repo>/.project-graph --orphans
 ```
 
 Query modes refresh stale artifacts first, then print compact Markdown rows.
+
+## Enriched Relationships
+
+Beyond `contains` and `imports`, the graph can detect:
+
+- `tests`: likely test-to-source links by naming convention
+- `configures`: known config and manifest files connected to the repo root
+- `runs`: package scripts linked to local entrypoint files
+- `declares-route`: React Router-style route declarations
+- `renders`: React-style component usage through imported components
 
 ## Test
 
