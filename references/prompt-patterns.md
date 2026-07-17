@@ -63,7 +63,7 @@ Open package/config files only when the graph is not enough.
 ```text
 Use $project-graph.
 Before reading source, run the smallest graph query for <question>.
-Use --around, --impacted, --central, or --orphans when one fits.
+Use the smallest fitting query: --around, --impacted, --dependencies, --dependents, --path, --cycles, --untested, --violations, --changed, --impact-diff, --hotspots, --central, or --orphans.
 Only open raw files named by the query output.
 Return the result in 3-7 lines.
 ```

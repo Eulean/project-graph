@@ -1,4 +1,4 @@
 interface:
   display_name: "Project Graph"
-  short_description: "Map repos into reusable graph context"
-  default_prompt: "Use $project-graph to build or refresh a cached graph before answering architecture, impact, test, route, or tooling questions."
+  short_description: "Map code, impact, architecture, and Git risk"
+  default_prompt: "Use $project-graph to map this repository and explain its architecture, dependencies, change impact, tests, and structural risks."
